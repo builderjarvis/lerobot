@@ -102,13 +102,18 @@ class KeyboardTeleop(Teleoperator):
     def calibrate(self) -> None:
         pass
 
+    def _normalize_key(self, key):
+        if hasattr(key, "char") and key.char is not None:
+            return key.char
+        return key
+
     def _on_press(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, True))
+        normalized = self._normalize_key(key)
+        self.event_queue.put((normalized, True))
 
     def _on_release(self, key):
-        if hasattr(key, "char"):
-            self.event_queue.put((key.char, False))
+        normalized = self._normalize_key(key)
+        self.event_queue.put((normalized, False))
         if key == keyboard.Key.esc:
             logging.info("ESC pressed, disconnecting.")
             self.disconnect()
