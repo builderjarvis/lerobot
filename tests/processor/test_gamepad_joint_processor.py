@@ -75,6 +75,20 @@ class TestMapGamepadToJointPositionsStep:
         for name in MOTOR_NAMES:
             assert result[f"{name}.pos"] == pytest.approx(obs[f"{name}.pos"])
 
+    def test_no_input_holds_last_target_even_if_observation_sags(self):
+        """Idle teleop should hold the last target instead of following a sagging observation."""
+        step = MapGamepadToJointPositionsStep(motor_names=MOTOR_NAMES)
+
+        first_obs = _make_observation()
+        first_result = _run_step(step, _make_gamepad_action(), first_obs)
+        assert first_result["shoulder_lift.pos"] == pytest.approx(45.0)
+
+        sagged_obs = _make_observation(**{"shoulder_lift.pos": 39.0, "elbow_flex.pos": -35.0})
+        second_result = _run_step(step, _make_gamepad_action(), sagged_obs)
+
+        assert second_result["shoulder_lift.pos"] == pytest.approx(45.0)
+        assert second_result["elbow_flex.pos"] == pytest.approx(-30.0)
+
     def test_left_stick_y_moves_shoulder_lift(self):
         """delta_x (left stick Y) should move shoulder_lift."""
         step = MapGamepadToJointPositionsStep(motor_names=MOTOR_NAMES, joint_step_size=3.0)
@@ -120,14 +134,15 @@ class TestMapGamepadToJointPositionsStep:
 
     def test_bumpers_move_wrist_roll(self):
         """delta_wz (LB/RB) should move wrist_roll."""
-        step = MapGamepadToJointPositionsStep(motor_names=MOTOR_NAMES, joint_step_size=3.0)
         obs = _make_observation()
 
         # RB pressed (+1)
+        step = MapGamepadToJointPositionsStep(motor_names=MOTOR_NAMES, joint_step_size=3.0)
         result = _run_step(step, _make_gamepad_action(delta_wz=1.0), obs)
         assert result["wrist_roll.pos"] == pytest.approx(0.0 + 3.0)
 
-        # LB pressed (-1)
+        # LB pressed (-1) from a fresh target baseline
+        step = MapGamepadToJointPositionsStep(motor_names=MOTOR_NAMES, joint_step_size=3.0)
         result = _run_step(step, _make_gamepad_action(delta_wz=-1.0), obs)
         assert result["wrist_roll.pos"] == pytest.approx(0.0 - 3.0)
 

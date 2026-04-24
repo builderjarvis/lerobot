@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lerobot.configs import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.types import PolicyAction, RobotAction, TransitionKey
@@ -144,8 +144,10 @@ class MapGamepadToJointPositionsStep(RobotActionProcessorStep):
     """
     Maps gamepad axis deltas directly to joint position targets.
 
-    Each gamepad axis controls one joint. The step reads current joint positions
-    from the robot observation and adds scaled deltas to compute target positions.
+    Each gamepad axis controls one joint. The step latches the last commanded
+    target and nudges that target when input is present. This avoids re-basing
+    on a sagging observation every frame, which would otherwise let gravity walk
+    the arm downward while idle.
 
     Axis mapping:
         delta_x  (left stick Y)  → shoulder_lift
@@ -159,11 +161,14 @@ class MapGamepadToJointPositionsStep(RobotActionProcessorStep):
         motor_names: Ordered motor names matching the robot.
         joint_step_size: Degrees added per frame per unit of stick deflection.
         gripper_step_size: Gripper position delta per frame for open/close.
+        input_threshold: Small threshold below which deltas are treated as idle.
     """
 
     motor_names: list[str]
     joint_step_size: float = 3.0
     gripper_step_size: float = 5.0
+    input_threshold: float = 1e-3
+    _last_targets: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
     def action(self, action: RobotAction) -> RobotAction:
         observation = self.transition.get(TransitionKey.OBSERVATION).copy()
@@ -174,7 +179,7 @@ class MapGamepadToJointPositionsStep(RobotActionProcessorStep):
         delta_elbow_flex = float(action.pop("delta_z", 0.0))
         delta_wrist_flex = float(action.pop("delta_wx", 0.0))
         delta_wrist_roll = float(action.pop("delta_wz", 0.0))
-        gripper = float(action.pop("gripper", 1.0))  # 0=open, 1=close, 2=stay
+        gripper = float(action.pop("gripper", 1.0))  # 0=open, 1=stay, 2=close
 
         joint_deltas = {
             "shoulder_pan": delta_shoulder_pan,
@@ -187,17 +192,21 @@ class MapGamepadToJointPositionsStep(RobotActionProcessorStep):
         result: RobotAction = {}
         for name in self.motor_names:
             current_pos = float(observation.get(f"{name}.pos", 0.0))
+            target = self._last_targets.get(name, current_pos)
+
             if name == "gripper":
                 # Discrete gripper: 0=open, 2=close, 1=stay
                 if gripper == 0:
-                    result[f"{name}.pos"] = max(current_pos - self.gripper_step_size, 0.0)
+                    target = max(target - self.gripper_step_size, 0.0)
                 elif gripper == 2:
-                    result[f"{name}.pos"] = min(current_pos + self.gripper_step_size, 100.0)
-                else:
-                    result[f"{name}.pos"] = current_pos
+                    target = min(target + self.gripper_step_size, 100.0)
             else:
-                delta = joint_deltas.get(name, 0.0) * self.joint_step_size
-                result[f"{name}.pos"] = current_pos + delta
+                delta = joint_deltas.get(name, 0.0)
+                if abs(delta) > self.input_threshold:
+                    target = target + delta * self.joint_step_size
+
+            self._last_targets[name] = target
+            result[f"{name}.pos"] = target
 
         return result
 
